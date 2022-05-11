@@ -688,6 +688,326 @@ p.terminate() # 结束进程
 # 6. mpi4py
 # 7. celery：分布式任务管理
 # 8. rq：基于redis的分布式队列
+## 8.1 队列与初始化
+~~~python
+from rq import Queue
+q = Queue(connection=Redis())
+
+# 队列实例
+# 1. 队列中任务个数
+print(len(q))
+# 2. 所有任务的id
+queued_job_ids = q.job_ids
+# 3. 所有任务的实例
+queued_jobs = q.jobs
+# 4. 特定任务的实例
+job = q.fetch_job('my_id')
+# 5. 删除整个队列
+q.delete(delete_jobs=True)
+# 6. 获取位置
+q.get_job_position(job)
+
+~~~
+初始化队列参数|说明
+--| --
+name | 队列名称，默认default
+connection | redis链接实例
+is_async | 等待执行，默认True，False时在同一个线程中立即执行作业
+default_timeout | 默认 None
+job_class| 默认None
+serializer|可换成json rq.serializers.JSONSerializer，默认pickle
+
+## 8.2 任务与入队
+~~~python
+# 任务入队
+# 方法1: 简单放入
+job = q.enqueue(length_of_url, 'https://www.twle.cn/')
+# 方法2: 字符串作为调用函数
+job = q.enqueue('my_package.my_module.my_func', 3, 4)
+# 方法3: enqueue的底层enqueue_call
+job = q.enqueue_call(func=length_of_url,
+               args=('https://www.twle.cn',),
+               timeout=30)
+# 方法4: 装饰器
+@job('low', connection=my_redis_conn, timeout=5)
+def add(x, y):
+    return x + y
+job = add.delay(3, 4)
+# 方法5：定时与调度
+job = queue.enqueue_at(datetime(2019, 10, 8, 9, 15), say_hello)
+job = queue.enqueue_in(timedelta(seconds=10), say_hello)
+# 方法6：尝试
+from rq import Retry
+job = queue.enqueue(say_hello, retry=Retry(max=3))
+job = queue.enqueue(say_hello, retry=Retry(max=3, interval=[10, 30, 60]))
+# 方法7：redis的pipeline
+with q.connection.pipeline() as pipe:
+  jobs = q.enqueue_many(
+    [
+      Queue.prepare_data(count_words_at_url, 'http://nvie.com', job_id='my_job_id'),
+      Queue.prepare_data(count_words_at_url, 'http://nvie.com', job_id='my_other_job_id'),
+    ]
+    pipeline=pipe
+  )
+  pipe.execute()
+# 方法8：创建再执行
+from rq.job import Job
+job = Job.create(count_words_at_url, 'http://nvie.com')
+q.enqueue_job(job)
+
+# 方法9：命令行
+"""
+rq enqueue path.to.func abc
+rq enqueue path.to.func abc=def
+"""
+# 设置回调：60s的执行限制
+def report_success(job, connection, result, *args, **kwargs):
+    pass
+def report_failure(job, connection, type, value, traceback):
+    pass
+
+# 任务实例
+# 1. 获取任务实例
+from rq.job import Job
+job = Job.fetch('my_job_id', connection=redis)
+# 2. 获取多任务实例
+jobs = Job.fetch_many(['foo_id', 'bar_id'], connection=redis)
+for job in jobs:
+    print('Job %s: %s' % (job.id, job.func_name))
+# 3. 获取结果
+print(job.result) # 未完成时返回 None，完成时返回任务的返回值
+# 4. 干掉job：正在running
+from rq.command import send_stop_job_command
+# This will raise an exception if job is invalid or not currently executing
+send_stop_job_command(redis, job_id)
+# 5. 取消job：还没running
+from rq.registry import CanceledJobRegistry
+job.cancel()
+print(job.get_status())  # CANCELED
+registry = CanceledJobRegistry(queue=job.origin, connection=job.connection)
+print(job in registry)  # Job is in CanceledJobRegistry
+# 6. 失败任务查询与调度
+registry = FailedJobRegistry(queue=q)
+registry = q.failed_job_registry
+for job_id in registry.get_job_ids():
+    # job = Job.fetch(job_id, connection=redis)
+    registry.requeue(job_id)  # Puts back in its original queue
+assert len(registry) == 0
+# 7. 额外保存信息
+job.meta['handled_by'] = socket.gethostname()
+job.save_meta()
+# 7. 命令行调度
+# myqueue中执行的任务中失败的
+rq requeue --queue myqueue -u redis://localhost:6379 foo_job_id bar_job_id
+rq requeue --queue myqueue -u redis://localhost:6379 --all
+
+
+# job示例方法
+job.get_status(refresh=True)
+job.get_meta(refresh=True)
+job.origin # 任务的队列名称
+job.func_name
+job.args
+job.kwargs
+job.result
+job.enqueued_at
+job.started_at
+job.ended_at
+job.exc_info  # 异常信息
+job.last_heartbeat
+job.worker_name
+job.refresh()
+job.get_position()
+~~~
+enqueue参数 | 说明
+-- | --
+job_timeout|最大运行时间，默认300  支持字符串表示 '1h'，'3m'，'5s'
+result_ttl|结果保存的时间 默认 500
+ttl|队列中排队的最长时间，超过会被取消。如果指定值 -1，则表示不限时间
+failure_ttl|失败任务保存时间，默认1年
+depends_on|任务依赖，任务实例或任务id，支持列表
+job_id|用于手动指定该作业任务的 id job_id
+at_front|用于将该作业任务放置在队列的头部，而不是尾部，也就是说可以优先被执行
+on_success|成功的回调
+on_failure|失败的回调
+## 8.3 worker与启动
+- 如果想要并发执行，需要启动多个worker任务
+- 每一个worker都会fork子进程来处理任务：fetch-fork-execute循环
+### 8.3.1 命令行
+1. 可以自定义worker class
+    - -w 'path.to.GeventWorker'
+2. 可以自定义job class
+    - --job-class 'custom.JobClass'
+3. 可以自定义queue class
+    - --queue-class 'custom.QueueClass'
+4. 可以指定异常处理
+    - --exception-handler 'path.to.my.ErrorHandler'
+~~~bash
+rq worker  # 是一个常驻进程
+rq worker high default low # 指定队列名
+rq worker --with-scheduler
+~~~
+参数|说明
+--|--
+-b, --burst|使用临时模式，当处理完所有任务后自动退出
+--logging_level TEXT|设置日志级别
+-n, --name TEXT|用于指定工作进程的名称
+--results-ttl INTEGER|用于指定作业任务执行结果的保存时间
+--worker-ttl INTEGER|用于指定作业任务的最大执行时间
+--job-monitoring-interval INTEGER|设置作业任务监控心跳时间
+-v, --verbose|输出更多启动信息
+-q, --quiet|输出更少启动信息
+--sentry-dsn TEXT|将异常发送到该 Sentry DSN 上
+--exception-handler TEXT|当异常发生时的异常处理器
+--pid TEXT|将当前进程的编号写入指定的文件
+-P, --path TEXT|指定模块导入路径
+--connection-class TEXT|自定义指定连接 Redis 时使用的连接类
+--queue-class TEXT|自定义 RQ Queue 类
+-j, --job-class TEXT|自定义 RQ Job 类
+-w, --worker-class TEXT|自定义 RQ Worker 类
+-c, --config TEXT|RQ 配置信息的模块
+-u, --url TEXT|用于指定 Redis 服务的连接信息
+--serializer | rq.serializers.JSONSerializer
+--help|输出帮助信息
+#### 8.3.1.1 文件参数
+- rq worker -c settings 进行启动
+~~~python
+REDIS_URL = 'redis://localhost:6379/1'
+
+# You can also specify the Redis DB to use
+# REDIS_HOST = 'redis.example.com'
+# REDIS_PORT = 6380
+# REDIS_DB = 3
+# REDIS_PASSWORD = 'very secret'
+
+# Queues to listen on
+QUEUES = ['high', 'default', 'low']
+
+# If you're using Sentry to collect your runtime exceptions, you can use this
+# to configure RQ for it in a single step
+# The 'sync+' prefix is required for raven: https://github.com/nvie/rq/issues/350#issuecomment-43592410
+SENTRY_DSN = 'sync+http://public:secret@example.com/1'
+
+# If you want custom worker name
+# NAME = 'worker-1024'
+~~~
+### 8.3.2 python启动
+~~~python
+def my_handler(job, exc_type, exc_value, traceback):
+    # return False: 不允许链式调用
+    # return True or no return，允许链式调用
+    pass  
+
+from rq import Worker
+queue = Queue('queue_name')
+worker = Worker(
+    [q], 
+    connection=redis_client.client, 
+    name='foo',
+    exception_handlers=[foo_handler],
+    disable_default_exception_handler=False
+)
+worker.work(
+    with_scheduler=True,  # 支持调度
+    burst=True  # 队列为空就退出（用于测试）
+)
+~~~
+### 8.4 worker监控与控制
+~~~python
+workers = Worker.all(connection=redis)
+workers = Worker.all(queue=queue)
+
+for worker in workers:
+    # 1. 杀死整个worker
+    send_shutdown_command(redis, worker.name)
+    # 2. 杀死当前任务
+    if worker.state == WorkerStatus.BUSY:
+        send_kill_horse_command(redis, worker.name)
+
+# 整体监控
+# pip install rq-dashboard
+rq info
+rq info high default
+rq info -R
+rq info --interval 1
+
+~~~
+worker属性|解释
+--|--
+hostname|主机名
+pid|进程号
+queues|监听的队列
+state|suspended, started, busy, idle
+current_job|正在运行的job
+last_heartbeat|最后一次此worker被看见
+birth_date|进程初始化时间
+successful_job_count|worker完成了几个任务
+failed_job_count|worker失败了了几个任务
+total_working_time|总任务执行时长，单位秒
+
+# 8.5 自定义类
+## 8.5.1 自定义worker
+- Subclasses of Worker which override handle_job_failure() should likewise take care to handle jobs with a stopped status appropriately.
+## 8.6 存储
+### 8.6.1 任务存储
+键|类型|值
+--|--|--
+rq:queues | set | 具体任务队列：rq:queue:default
+rq:queue:default | set | 排队的任务列表：任务id1、任务id2
+rq:job:{任务id} | hash | 任务描述信息，**详见8.1.2**
+
+### 8.6.2 任务描述（rq:job:{任务id}）
+键|说明|值
+--|--|--
+timeout|任务执行的超时时间|180 **超时后该key被删**
+origin|保存的作业任务队列|default
+description|描述|一般是该作业任务的 __repr__ 函数结果: modelserver.job.sleep(10)
+status|状态|queued、started、finished、failed、deferred
+data|作业任务要执行的函数，pickle 序列化后的结果|\BeJxrYJmqzAABGj2iufkpqTnFqUVlqUV6WflJesU5qakFU/y8uVqn1E4pmaIHACZCDvU=
+created_at|创建时间|2022-05-09T21:05:09.167316Z
+enqueued_at|加入队列时间|2022-05-09T21:05:09.168197Z
+started_at|开始时间|2022-05-09T21:05:09.214252Z
+ended_at |结束时间| 2022-05-09T21:05:19.230443Z
+last_heartbeat|最后心跳时间|2022-05-09T21:05:09.198273Z
+success_callback_name
+failure_callback_name
+worker_name
+result|返回的结果|\BgARLZC4=
+
+### 8.6.3 任务执行
+键|类型|值
+--|--|--
+rq:finished:default | SortedSet | 完成的任务id，时间戳
+rq:workers:default|set| rq:worker:{worker id}
+rq:workers|set|rq:worker:{worker id}
+rq:queue:default | set | 排队的任务列表：任务id1、任务id2
+rq:worker:{worker id} | hash | worker描述信息，**详见8.1.4**
+### 8.6.4 worker 描述（rq:worker:{worker id}）
+键|值
+--|--
+total_working_time|20.007605
+current_job_working_time|0
+ipaddress|127.0.0.1:50945
+hostname|CO2DX6PZMD6R
+version|1.10.1
+state|idle
+pid|56640
+python_version|3.7.3|(v3.7.3:ef4ec6ed12,|Mar|25|2019,|16:52:21)|Inl...
+queues|default
+last_heartbeat|2022-05-09T20:52:24.678480Z
+successful_job_count|2
+birth|2022-05-09T20:38:34.517994Z
+
+## 8.7 worker生命周期
+1. 启动，加载 Python 环境
+2. 出生登记。工作进程将自己注册到系统
+3. 开始监听，从给定的队列中弹出作业任务并执行，如果没有作业任务且使用了临时模式，那么该工作进程将自动退出，否则会一直等待新的作业任务到来
+4. 作业任务执行前准备。此时，工作进程会将自己的状态设定为 busy 并在 StartedJobRegistry 中注册作业任务来告诉系统它将开始工作
+5. **fork 出一个子进程**。子进程将在失败安全 ( fail-safe ) 的上下文中执行真正的作业任务
+6. 执行作业任务，这个一般由 fork 出的子进程来实行
+7. 清理作业任务执行环境。 工作进程会将自己的状态设置为 idle 并将子进程执行的作业结果保存到 Redis 中并设置结果的过期时间为 result_ttl。 作业任务也从 StartedJobRegistry 中删除，并在成功执行时添加到 FinishedJobRegistry，或者在失败的情况下添加到 FailedQueue
+8. 从第 3 步开始循环
+
 # 9. gevent: 协程
 # 10. async: 协程
 
