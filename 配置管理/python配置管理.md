@@ -1,7 +1,26 @@
 # 1. dynaconf
 ## 1.1 配置文件加载
-1. 实例化参数：settings_files = ['conf/settings.dev.toml']
-2. 环境变量：ENV_FOR_DYNACONF=dev
+~~~python
+# dynaconf = "^3.1.8"
+# 1. 加载
+from dynaconf import Dynaconf
+
+settings = Dynaconf(
+    environments=True,  # 可以从环境变量中加载配置
+    envvar_prefix='MODELSERVER',  # 只认envvar_prefix开头的环境变量
+    settings_files=[  # 写法固定，配置环境变量 ENV_FOR_DYNACONF=dev 影响加载哪个文件
+        'conf/settings.dev.toml',
+        'conf/settings.pytest.toml',
+        'conf/settings.boe.toml',
+        'conf/settings.staging.toml',
+        'conf/settings.prod.toml',
+    ]
+)
+
+# 2. 使用
+settings["time"]["tz"]
+~~~
+### 1.1.1 toml文件示例
 ~~~toml
 [dev]
 env = "dev"  # settings["env"]
@@ -13,34 +32,16 @@ format = "YYYY-MM-DD HH:mm:ss ZZ"  # settings["time"]["format"]
 [dev.redis]
 url = "redis://?db=0"  # settings["redis"]["url"]
 ~~~
-## 1.2 环境变量加载
-1. 实例化参数：environments=True,
-2. 实例化参数：envvar_prefix='MODELSERVER'
-3. 如果手动注入需要 settings.configure()
-    - 手动注入：os.environ.setdefault("key", "value")
-4. MODELSERVER_VAR2__VAR3: 字典的第二层要用双下划线
+## 1.2 环境变量加载配置
 ~~~python
-# monkeypatch pytest的写法
-monkeypatch.setenv('MODELSERVER_VAR2__VAR3', 'world')
-settings.configure()
-assert settings.var2.var3 == 'world'
-~~~
-## 附录：实例化的代码
-~~~python
-# dynaconf = "^3.1.8"
 from dynaconf import Dynaconf
-
 settings = Dynaconf(
     environments=True,  # 可以从环境变量中加载配置
     envvar_prefix='MODELSERVER',  # 只认envvar_prefix开头的环境变量
-    settings_files=[  # 写法固定，配置环境变量ENV_FOR_DYNACONF=dev
-        'conf/settings.dev.toml',
-        'conf/settings.pytest.toml',
-        'conf/settings.boe.toml',
-        'conf/settings.staging.toml',
-        'conf/settings.prod.toml',
-    ]
 )
+os.environ.setdefault("MODELSERVER_VAR2__VAR3", "value")  # 字典的第二层要用双下划线
+settings.configure()
+assert settings.var2.var3 == 'value'
 ~~~
 
 # 2. yml
