@@ -39,6 +39,19 @@ job._args = args
 job._kwargs = kwargs
 ~~~
 # 3. 字符串调用
+## 3.1 默认与覆盖：字符串调用
+~~~python
+def backend_class(holder, default_name, override=None):
+    """Get a backend class using its default attribute name or an override"""
+    if override is None:
+        return getattr(holder, default_name)
+    elif isinstance(override, string_types):
+        return import_attribute(override)
+    else:
+        return override
+
+~~~
+## 3.2 字符串和绑定：函数解析成字符串再动态导入
 ~~~python
 # 1. 可调用的检查
 if not inspect.isfunction(on_success) and not inspect.isbuiltin(on_success):
@@ -110,5 +123,281 @@ def import_attribute(name):
 
     return getattr(attribute_owner, attribute_name)
 ~~~
+# 4. local变量
+单独写成了local.py文件，[解读参考](https://selfboot.cn/2016/08/26/threadlocal_implement/)
+
+1. 本质是一个全局变量（字典）通过线程或协程的__ident_id__区分
+2. 使得不用每次都传一堆参数
+## 4.1 应用
+1. flask中通过local对象保存请求信息，开始时入栈，结束后出栈
+2. rq中保存connection（具体见5）
+# 5. 装饰器
+**定义**
+- finally的内容就是__exit__的内容
+
+**使用**
+- **不管类还是函数加装饰器，都是一种特殊的实例化调用**
+- 方法1. yield something，被as接收
+- 方法2. yield 空，可以让函数通过 本地栈的方式获取参数
+- 类装饰器 as 接收 __enter__的返回值（一般是self）
+~~~python
+@contextmanager
+def Connection(connection=None):  # noqa
+    if connection is None:
+        connection = Redis()
+    push_connection(connection)
+    try:
+        yield
+    finally:
+        popped = pop_connection()
+        assert popped == connection, \
+            'Unexpected Redis connection was popped off the stack. ' \
+            'Check your Redis connection setup.'
 
 
+def push_connection(redis):
+    """Pushes the given connection on the stack."""
+    _connection_stack.push(redis)
+
+
+def pop_connection():
+    """Pops the topmost connection from the stack."""
+    return _connection_stack.pop()
+
+# 清空并放进去一个connection
+def use_connection(redis=None):
+    """Clears the stack and uses the given connection.  Protects against mixed
+    use of use_connection() and stacked connection contexts.
+    """
+    assert len(_connection_stack) <= 1, \
+        'You should not mix Connection contexts with use_connection()'
+    release_local(_connection_stack)
+
+    if redis is None:
+        redis = Redis()
+    push_connection(redis)
+
+# 返回栈顶的
+def get_current_connection():
+    """Returns the current Redis connection (i.e. the topmost on the
+    connection stack).
+    """
+    return _connection_stack.top
+
+# 传了就用你的connection，没传就用栈顶的
+def resolve_connection(connection=None):
+    """Convenience function to resolve the given or the current connection.
+    Raises an exception if it cannot resolve a connection now.
+    """
+    if connection is not None:
+        return connection
+
+    connection = get_current_connection()
+    if connection is None:
+        raise NoRedisConnectionException('Could not resolve a Redis connection')
+    return connection
+
+from local import LocalStack  # 就是整理出来的local.py文件
+_connection_stack = LocalStack()
+
+__all__ = ['Connection', 'get_current_connection', 'push_connection',
+           'pop_connection', 'use_connection']
+
+~~~
+# 6. 彩色日志
+~~~python
+class _Colorizer:
+    def __init__(self):
+        esc = "\x1b["
+
+        self.codes = {}
+        self.codes[""] = ""
+        self.codes["reset"] = esc + "39;49;00m"
+
+        self.codes["bold"] = esc + "01m"
+        self.codes["faint"] = esc + "02m"
+        self.codes["standout"] = esc + "03m"
+        self.codes["underline"] = esc + "04m"
+        self.codes["blink"] = esc + "05m"
+        self.codes["overline"] = esc + "06m"
+
+        dark_colors = ["black", "darkred", "darkgreen", "brown", "darkblue",
+                       "purple", "teal", "lightgray"]
+        light_colors = ["darkgray", "red", "green", "yellow", "blue",
+                        "fuchsia", "turquoise", "white"]
+
+        x = 30
+        for d, l in zip(dark_colors, light_colors):
+            self.codes[d] = esc + "%im" % x
+            self.codes[l] = esc + "%i;01m" % x
+            x += 1
+
+        del d, l, x
+
+        self.codes["darkteal"] = self.codes["turquoise"]
+        self.codes["darkyellow"] = self.codes["brown"]
+        self.codes["fuscia"] = self.codes["fuchsia"]
+        self.codes["white"] = self.codes["bold"]
+
+        if hasattr(sys.stdout, "isatty"):
+            self.notty = not sys.stdout.isatty()
+        else:
+            self.notty = True
+
+    def reset_color(self):
+        return self.codes["reset"]
+
+    def colorize(self, color_key, text):
+        if self.notty:
+            return text
+        else:
+            return self.codes[color_key] + text + self.codes["reset"]
+
+
+colorizer = _Colorizer()
+
+
+def make_colorizer(color):
+    """Creates a function that colorizes text with the given color.
+
+    For example:
+
+        green = make_colorizer('darkgreen')
+        red = make_colorizer('red')
+
+    Then, you can use:
+
+        print "It's either " + green('OK') + ' or ' + red('Oops')
+    """
+    def inner(text):
+        return colorizer.colorize(color, text)
+    return inner
+
+green = make_colorizer('darkgreen')
+yellow = make_colorizer('darkyellow')
+blue = make_colorizer('darkblue')
+
+logger.info('*** Listening on %s...', green(', '.join(qnames)))
+~~~
+# 7. 信号
+~~~python
+def request_force_stop(self, signum, frame):
+    """Terminates the application (cold shutdown).
+    """
+    self.log.warning('Cold shut down')
+
+    # Take down the horse with the worker
+    if self.horse_pid:
+        self.log.debug('Taking down horse %s with me', self.horse_pid)
+        self.kill_horse()
+        self.wait_for_horse()
+    raise SystemExit()
+
+def request_stop(self, signum, frame):
+    """Stops the current worker loop but waits for child processes to
+    end gracefully (warm shutdown).
+    """
+    self.log.debug('Got signal %s', signal_name(signum))
+
+    signal.signal(signal.SIGINT, self.request_force_stop)
+    signal.signal(signal.SIGTERM, self.request_force_stop)
+
+    self.handle_warm_shutdown_request()
+    self._shutdown()
+
+def _shutdown(self):
+    """
+    If shutdown is requested in the middle of a job, wait until
+    finish before shutting down and save the request in redis
+    """
+    if self.get_state() == WorkerStatus.BUSY:
+        self._stop_requested = True  # 这里用了一个变量记录是否关闭
+        self.set_shutdown_requested_date()
+        self.log.debug('Stopping after current horse is finished. '
+                        'Press Ctrl+C again for a cold shutdown.')
+        if self.scheduler:
+            self.stop_scheduler()
+    else:
+        if self.scheduler:
+            self.stop_scheduler()
+        raise StopRequested()
+~~~
+
+# 8. 命令行工具
+1. 更多用法参考：cli命令行.py
+~~~python
+blue = make_colorizer('darkblue')
+
+
+# Disable the warning that Click displays (as of Click version 5.0) when users
+# use unicode_literals in Python 2.
+# See http://click.pocoo.org/dev/python3/#unicode-literals for more details.
+click.disable_unicode_literals_warning = True
+
+@main.command()
+@click.option('--interval', '-i', type=float, help='Updates stats every N seconds (default: don\'t poll)')
+@click.option('--raw', '-r', is_flag=True, help='Print only the raw numbers, no bar charts')
+@click.option('--only-queues', '-Q', is_flag=True, help='Show only queue info')
+@click.option('--only-workers', '-W', is_flag=True, help='Show only worker info')
+@click.option('--by-queue', '-R', is_flag=True, help='Shows workers by queue')
+@click.argument('queues', nargs=-1)
+@pass_cli_config
+def info(cli_config, interval, raw, only_queues, only_workers, by_queue, queues,
+         **options):
+    """RQ command-line monitor."""
+
+    if only_queues:
+        func = show_queues
+    elif only_workers:
+        func = show_workers
+    else:
+        func = show_both
+
+    try:
+        with Connection(cli_config.connection):
+
+            if queues:
+                qs = list(map(cli_config.queue_class, queues))
+            else:
+                qs = cli_config.queue_class.all()
+
+            for queue in qs:
+                clean_registries(queue)
+                clean_worker_registry(queue)
+
+            refresh(interval, func, qs, raw, by_queue,
+                    cli_config.queue_class, cli_config.worker_class)
+    except ConnectionError as e:
+        click.echo(e)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        click.echo()
+        sys.exit(0)
+~~~
+# 9. Thread
+~~~python
+class PubSubWorkerThread(threading.Thread):
+    def __init__(self, pubsub, sleep_time, daemon=False):
+        super(PubSubWorkerThread, self).__init__()
+        self.daemon = daemon
+        self.pubsub = pubsub
+        self.sleep_time = sleep_time
+        self._running = threading.Event()  # 用一个变量记录running状态
+
+    def run(self):
+        if self._running.is_set():
+            return
+        self._running.set()
+        pubsub = self.pubsub
+        sleep_time = self.sleep_time
+        while self._running.is_set():
+            pubsub.get_message(ignore_subscribe_messages=True,
+                               timeout=sleep_time)
+        pubsub.close()
+
+    def stop(self):
+        # trip the flag so the run loop exits. the run loop will
+        # close the pubsub connection, which disconnects the socket
+        # and returns the connection to the pool.
+        self._running.clear()
+~~~

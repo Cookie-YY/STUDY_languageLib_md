@@ -108,7 +108,7 @@ with ProcessPoolExecutor(max_workers=2) as pool:
 end = time.time()
 print 'Took %.3f seconds.' % (end - start)
 ~~~
-# 2. multiprocessing
+# 2. multiprocessing：基础的进程并发库
 1. 优点：
     - 支持取消terminate语义
     - multiprocessing提供 Queue、Pipe、Lock语义
@@ -1010,4 +1010,337 @@ birth|2022-05-09T20:38:34.517994Z
 
 # 9. gevent: 协程
 # 10. async: 协程
+## 10.1 前置概念
+1. async: async定义的函数会成为协程
+2. await: async定义的函数中使用，通知loop此时可以调度出去了
+    - 通常放一些io昂贵的操作
+    - 协程(函数或对象) 、任务task、Future对象
+3. yield:
+    - 函数中使用，即将函数变成生成器
+    - 函数的返回值变成迭代器
+4. yield from: 两种用法
+    - yield from 代替 await
+    - yield from 代替 for循环 + yield
+5. 判断
+    - asyncio.iscoroutine(): 不认yield from方法的协程
+    - inspect.iscoroutine(): 认yield from方法的协程
+    - asyncio.iscoroutinefunction(): 不认yield from方法的协程对象
+    - inspect.iscoroutinefunction(): 认yield from方法的协程
+6. 最佳实践
+    - 自己用：async创建多个协程，main方法中通过task调度，最后asyncio.run(main())
+    - 引用别人的: 先判断是否是协程对象，然后创建一个loop，调用loop.run_until_complete()
+### 10.2 协程 Coroutines
+1. 分为「协程函数」和「协程对象」，都叫协程
+    - 协程函数: async定义的函数 或者 yield from+装饰器得到的函数
+    - 协程对象: 协程函数的返回值（并不会调用协程）
+2. 无论是协程函数还是协程对象都可以在await后面出现
+    - 直接await一个协程，内部不会发生调度（需要await 一个task）
+3. 通过asyncio.run(main())调用
+
+**协程被运行的方法**
+
+- asyncio.gather(协程1, 协程2)
+- asyncio.wait_for(协程)
+- asyncio.run(main())  # 只在最外层调用
+- loop.run_until_complete(协程)
+~~~python
+# 两种定义协程的方法
+# 通过async定义的协程
+async def say_after(delay, what):
+    await asyncio.sleep(delay)
+    print(what)
+
+# 通过yield from + 装饰器定义的协程
+@asyncio.coroutine
+def old_style_coroutine():
+    yield from asyncio.sleep(1)
+~~~
+### 10.3 任务 task
+1. 赋予协程被调度的能力
+    - Task 对象被用来在事件循环中运行协程
+    - 如果一个协程在等待一个 Future 对象，Task 对象会挂起该协程的执行并等待该 Future 对象完成
+    - 当该 Future 对象 完成，被打包的协程将恢复执行
+    - 创建后放到await后面，会自动放到loop（默认get_running_loop()）中被调用
+2. 通过asyncio.create_task创建
+    - loop.create_task()
+    - ensure_future()
+3. 是一个future对象的实用形式
+    - Task 从 Future 继承了其除 set_result() 和 set_exception() 以外的所有 API
+~~~python
+import asyncio
+import time
+
+async def say_after(delay, what):
+    await asyncio.sleep(delay)
+    print(what)
+
+# 这样执行无法并发执行，因为没有变成task，从而放到loop中
+async def main():
+    print(f"started at {time.strftime('%X')}")
+
+    await say_after(1, 'hello')
+    await say_after(2, 'world')
+
+    print(f"finished at {time.strftime('%X')}")
+
+# 这样可以并发执行，变成task之后可以放到loop中
+async def main():
+    # python3.7
+    task1 = asyncio.create_task(say_after(1, 'hello'))
+    task2 = asyncio.create_task(say_after(2, 'world'))
+    print(f"started at {time.strftime('%X')}")
+    await task1
+    await task2
+    print(f"finished at {time.strftime('%X')}")
+
+async.run(main())
+~~~
+#### 10.3.1 cancel
+> cancelled 方法进行判断
+1. 这将安排在下一轮事件循环中抛出一个 CancelledError 异常给被封包的协程
+2. 协程内部可以捕获这个错误，然后pass（不鼓励这样做）
+~~~python
+async def cancel_me():
+    print('cancel_me(): before sleep')
+
+    try:
+        # Wait for 1 hour
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        print('cancel_me(): cancel sleep')
+        raise
+    finally:
+        print('cancel_me(): after sleep')
+
+async def main():
+    # Create a "cancel_me" Task
+    task = asyncio.create_task(cancel_me())
+
+    # Wait for 1 second
+    await asyncio.sleep(1)
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        print("main(): cancel_me is cancelled now")
+
+asyncio.run(main())
+
+# Expected output:
+#
+#     cancel_me(): before sleep
+#     cancel_me(): cancel sleep
+#     cancel_me(): after sleep
+#     main(): cancel_me is cancelled now
+~~~
+#### 10.3.2 done
+#### 10.3.3 result
+- 获取返回值或异常
+    - 异常包括被取消的异常
+- 如果 Task 对象的结果还不可用，此方法会引发一个 InvalidStateError 异常
+#### 10.3.4 exception
+- 被取消，引发 CancelledError 异常。
+- 未完成，引发 InvalidStateError 异常。
+
+### 10.4 Futures
+1. 表示一种可等待的对象
+2. 当一个 Future 对象 被等待，这意味着协程将保持等待直到该 Future 对象在其他地方操作完毕。
+2. 使用时不建议自己创建futures对象，而是会由库和某些 asyncio API 暴露给用户，用作可等待对象
+~~~python
+async def main():
+    # 使用方法1
+    await function_that_returns_a_future_object()
+
+    # 使用方法2
+    await asyncio.gather(
+        function_that_returns_a_future_object(),
+        some_python_coroutine()
+    )
+~~~
+### 10.5 loop
+- 事件循环是每个 asyncio 应用的核心
+- 事件循环会运行异步任务和回调，执行网络 IO 操作，以及运行子进程
+- 设计理念是不把loop暴露出来，通过asyncio.run()通过最外层运行loop
+- 库和框架的编写者需要更精细的控制loop行为时使用
+#### 10.5.1 asyncio.get_running_loop
+- 返回当前 OS 线程中正在运行的事件循环。
+- 只能由协程调用
+
+#### 10.5.2 asyncio.get_event_loop
+1. 没有会创建并设置为当前时间循环
+    - 该 OS 线程为主线程
+    - asyncio.set_event_loop(loop) 还没有被调用
+#### 10.5.3 asyncio.new_event_loop()
+- 创建一个并设置为当前事件循环
+~~~python
+def _execute(self):
+    result = self.func(*self.args, **self.kwargs)
+    if asyncio.iscoroutine(result):
+        loop = asyncio.new_event_loop()
+        coro_result = loop.run_until_complete(result)
+        return coro_result
+    return result
+~~~
+#### 10.5.4 loop所属方法
+- loop.run_until_complete(future)
+    - 协程作为task运行(隐式转换)
+- loop.run_forever()
+    - 直到loop.stop()被调用
+- loop.is_running()
+- loop.is_closed()
+- loop.close()
+    - 非运行状态的loop调用
+    - 立即关闭执行器，不会等待执行器完成
+    - 幂等的和不可逆的。事件循环关闭后，不应调用其他方法
+### 10.6 相关方法
+#### 10.6.1 asyncio.run
+> python 3.7 的功能
+> python 3.9 更新为 loop.shutdown_default_executor()
+- 此函数总是会创建一个新的事件循环并在结束时关闭之
+- 它应当被用作 asyncio 程序的主入口点，理想情况下应当只被调用一次
+~~~python
+async def main():
+    await asyncio.sleep(1)
+    print('hello')
+
+asyncio.run(main())
+~~~
+#### 10.6.2 asyncio.create_task
+- 将 coro 协程 封装为一个 Task 并调度其执行
+- 该任务会在 get_running_loop() 返回的循环中执行
+
+#### 10.6.3 asyncio.sleep(delay)
+- sleep() 总是会挂起当前任务，以允许其他任务运行
+~~~python
+# 以下协程示例运行 5 秒，每秒显示一次当前日期:
+import asyncio
+import datetime
+
+async def display_date():
+    loop = asyncio.get_running_loop()
+    end_time = loop.time() + 5.0
+    while True:
+        print(datetime.datetime.now())
+        if (loop.time() + 1.0) >= end_time:
+            break
+        await asyncio.sleep(1)  # 这里只有自己这个协程，所以只能等待
+
+asyncio.run(display_date())
+~~~
+#### 10.6.4 asyncio.gather
+- 一种不通过变成task，而调度协程的方法
+- 接受多个协程对象，将返回值按顺序放到结果list中
+- 还有一个 return_exceptions 参数
+    - False 默认: 不影响其他协程
+- gather 可以被取消，所有未完成的协程都会被取消
+~~~python
+import asyncio
+
+async def factorial(name, number):
+    f = 1
+    for i in range(2, number + 1):
+        print(f"Task {name}: Compute factorial({number}), currently i={i}...")
+        await asyncio.sleep(1)
+        f *= i
+    print(f"Task {name}: factorial({number}) = {f}")
+    return f
+
+async def main():
+    # Schedule three calls *concurrently*:
+    L = await asyncio.gather(
+        factorial("A", 2),
+        factorial("B", 3),
+        factorial("C", 4),
+    )
+    print(L)
+
+asyncio.run(main())
+
+# Expected output:
+#
+#     Task A: Compute factorial(2), currently i=2...
+#     Task B: Compute factorial(3), currently i=2...
+#     Task C: Compute factorial(4), currently i=2...
+#     Task A: factorial(2) = 2
+#     Task B: Compute factorial(3), currently i=3...
+#     Task C: Compute factorial(4), currently i=3...
+#     Task B: factorial(3) = 6
+#     Task C: Compute factorial(4), currently i=4...
+#     Task C: factorial(4) = 24
+#     [2, 6, 24]
+~~~
+#### 10.6.5 asyncio.shield
+- 屏蔽取消
+    - res = await shield(something())
+    - something内部不会被取消
+- something内部依然可以取消
+#### 10.6.6 asyncio.wait_for & wait
+> asyncio.wait python3.8 被移除
+- timeout=None
+    - 此函数不会引发 asyncio.TimeoutError
+- return_when=ALL_COMPLETED
+    FIRST_COMPLETED
+    FIRST_EXCEPTION
+    ALL_COMPLETED
+- wait 在超时发生时不会取消可等待对象
+~~~python
+async def foo():
+    return 42
+
+task = asyncio.create_task(foo())
+done, pending = await asyncio.wait({task})
+
+if task in done:
+    # Everything will work as expected now.
+~~~
+#### 10.6.7 asyncio.as_completed(aws, *, timeout=None)
+1. 返回一个协程的迭代器
+2. 所返回的每个协程可被等待以从剩余的可等待对象的可迭代对象中获得最早的下一个结果
+3. 如果在所有 Future 对象完成前发生超时则将引发 asyncio.TimeoutError
+~~~python
+for coro in as_completed(aws):
+    earliest_result = await coro
+    # ...
+~~~
+#### 10.6.8 asyncio.current_task()
+- 获取当前loop的正在运行的task
+- 传入loop，或者自动获取当前loop
+#### 10.6.8 asyncio.all_tasks()
+- 获取当前loop中的所有task
+- 传入loop，或者自动获取当前loop
+
+# 11. Threading: 线程
+## 11. 线程内while True实现异步非阻塞效果
+~~~python
+class PubSubWorkerThread(threading.Thread):
+    def __init__(self, pubsub, sleep_time, daemon=False):
+        super(PubSubWorkerThread, self).__init__()
+        self.daemon = daemon
+        self.pubsub = pubsub
+        self.sleep_time = sleep_time
+        self._running = threading.Event()
+
+    def run(self):
+        if self._running.is_set():
+            return
+        self._running.set()
+        pubsub = self.pubsub
+        sleep_time = self.sleep_time
+        while self._running.is_set():  # 线程内whlie True
+            # get_message 会用回调函数处理请求
+            pubsub.get_message(ignore_subscribe_messages=True,
+                               timeout=sleep_time)
+        pubsub.close()
+
+    def stop(self):
+        # trip the flag so the run loop exits. the run loop will
+        # close the pubsub connection, which disconnects the socket
+        # and returns the connection to the pool.
+        self._running.clear()
+# 使用
+thread = PubSubWorkerThread(self, sleep_time, daemon=daemon)
+thread.start()
+return thread
+~~~
 
