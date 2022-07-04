@@ -1019,7 +1019,7 @@ birth|2022-05-09T20:38:34.517994Z
     - 函数中使用，即将函数变成生成器
     - 函数的返回值变成迭代器
 4. yield from: 两种用法
-    - yield from 代替 await
+    - yield from 代替 await （为了兼容python老版本）
     - yield from 代替 for循环 + yield
 5. 判断
     - asyncio.iscoroutine(): 不认yield from方法的协程
@@ -1051,7 +1051,7 @@ async def say_after(delay, what):
     print(what)
 
 # 通过yield from + 装饰器定义的协程
-@asyncio.coroutine
+@asyncio.coroutine  # python3.4之前需要这么用，因为没有async关键字
 def old_style_coroutine():
     yield from asyncio.sleep(1)
 ~~~
@@ -1093,7 +1093,7 @@ async def main():
     await task2
     print(f"finished at {time.strftime('%X')}")
 
-async.run(main())
+asyncio.run(main())  # python3.7新功能，自动创建loop，并在结束时关闭
 ~~~
 #### 10.3.1 cancel
 > cancelled 方法进行判断
@@ -1309,6 +1309,40 @@ for coro in as_completed(aws):
 #### 10.6.8 asyncio.all_tasks()
 - 获取当前loop中的所有task
 - 传入loop，或者自动获取当前loop
+
+### 10.7 请求中的异步
+#### 10.7.1 aiohttp
+~~~python
+# 可以做客户端去请求，也可以启动服务端
+# 以下是客户端的例子
+import aiohttp
+import asyncio
+
+async def main():
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get('http://python.org') as response:
+
+            print("Status:", response.status)
+            print("Content-type:", response.headers['content-type'])
+
+            html = await response.text()
+            print("Body:", html[:15], "...")
+
+loop = asyncio.get_event_loop()
+loop.run_until_complete(main())
+~~~
+#### 10.7.2 httpx
+~~~python
+# python3.6开始的
+async def main():
+    async with httpx.AsyncClient() as client:
+        tasks = (client.get(url) for url in urls)
+        regs = await asyncio.gather(*tasks)
+    htmls = [req.text for req in reqs]
+
+asyncio.run(main())
+~~~
 
 # 11. Threading: 线程
 ## 11. 线程内while True实现异步非阻塞效果

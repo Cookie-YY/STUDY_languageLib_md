@@ -19,6 +19,10 @@ poetry run python main.py
 
 # 3. 进入虚拟环境的shell中
 poetry shell
+
+### 如果是一个非poetry的项目
+poetry init
+cat requirements.txt | grep -E '^[^# ]' | cut -d= -f1 | xargs -n 1 poetry add
 ~~~
 ## 2.2 开发一个项目
 ~~~bash
@@ -145,6 +149,9 @@ split_before_named_assigns = true
 - Pipfile
 - Pipfile.lock
 ~~~bash
+######## 从requirements.txt创建虚拟环境并安装依赖 ########
+pipenv install -r path/to/requirements.txt
+
 # 创建虚拟环境
 pipenv --python 3.7 
 
