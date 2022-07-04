@@ -3,7 +3,7 @@
 # 指定源
 python3 -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # 指定源安装
-pip3 install -r requirements.txt -i https://bytedpypi.byted.org/simple
+pip3 install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ~~~
 # 2. poetry
 - pyproject.toml: poetry init 工具生成
@@ -58,7 +58,7 @@ poetry config virtualenvs.create --local --unset
 poetry export -f requirements.txt -o requirements.txt --without-hashes
 
 # 2. 线上安装
-pip3 install -r requirements.txt -i https://bytedpypi.byted.org/simple
+pip3 install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ~~~
 ## 2.4 发布一个项目
 ~~~bash
@@ -75,19 +75,20 @@ peotry publish --help
 ~~~toml
 # 基础信息
 [tool.poetry]
-authors = ["Shuai Zhang <zhangshuai.ds@bytedance.com>"]
-description = "Bytedkafka Examples."
-documentation = "https://site.bytedance.net/docs/1019/1250/34631/"
-homepage = "https://code.byted.org/zhangshuai.ds/bytedkafka_examples"
-maintainers = [
-  "Shuai Zhang <zhangshuai.ds@bytedance.com>",
-  "Shengfu Zou <zoushengfu@bytedance.com>",
-  "Liyuan Lei <leiliyuan@bytedance.com>",
-]
-name = "bytedkafka_examples"
-readme = "README.md"
-repository = "https://code.byted.org/zhangshuai.ds/bytedkafka_examples"
+authors = ["Yao Fu <fuyao@stu.pku.edu.cn>"]
+name = "Demo repo"
+description = "Demo repo"
 version = "0.1.1"
+
+repository = ""  # 仓库链接
+documentation = ""  # 文档链接
+homepage = ""  # 主页链接
+maintainers = [
+  "Yao Fu <fuyao@stu.pku.edu.cn>",
+  ...  # 其他人
+]
+readme = "README.md"
+
 
 [tool.poetry.dependencies]
 # 项目依赖放到这里
@@ -95,8 +96,6 @@ version = "0.1.1"
 # ^x.y.z preserve left most non-zero digit.
 # ~x.y.z preserve x.y, ~x.y preserve x
 absl-py = ">=0.12.0 <1.0"
-"bytedance.metrics" = ">=0.2.0 <1.0"
-bytedkafka = ">=0.0.21a1 <0.1"
 protobuf = [
   {version = ">=3.18.0 <4.0", python = ">=3.6"},
   {version = "^3.18.0", python = "=3.5"},
@@ -120,10 +119,10 @@ toml = ">=0.10.2 <1.0"
 yapf = ">=0.30 <1.0"
 
 [[tool.poetry.source]]
-# 指定使用公司内的 pypi 源
+# 指定使用其他 pypi 源（一般换成公司的）
 default = true
-name = "bytedpypi"
-url = "https://bytedpypi.byted.org/simple/"
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
 
 [build-system]
 build-backend = "poetry.core.masonry.api"
@@ -156,8 +155,8 @@ pipenv install -r path/to/requirements.txt
 pipenv --python 3.7 
 
 # 安装依赖
-pipenv install bytedtos==0.1.0 --skip-lock
-pipenv install --skip-lock -i https://bytedpypi.byted.org/simple -v
+pipenv install flask==2.22.0 --skip-lock
+pipenv install --skip-lock -i https://pypi.tuna.tsinghua.edu.cn/simple -v
 # 进入虚拟环境
 pipenv shell
 
