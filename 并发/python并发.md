@@ -37,12 +37,22 @@ while True:
 ~~~
 ### 1.1.2 submit()一次运行
 ~~~python
+# 批量提交
+import concurrent.futures
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+    infer_futures = [executor.submit(request_privacy, input_param) for input_param in input_params[i*50:(i+1)*50]]
+    results = [x.result() for x in infer_futures]
+print("="*100)
+for result in results:
+    print(result)
+
+# 处理错误
 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
     future1 = executor.submit(f, 0)
     future2 = executor.submit(f, 10)
     future3 = executor.submit(f, 20)
 todos = [future1, future2, future3]
-# 不要求顺序
 for future in concurrent.futures.as_completed(todos):
     try:
         print(future.result())
